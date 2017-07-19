@@ -1,0 +1,140 @@
+# --------------------------------------------------------
+# Fast R-CNN
+# Copyright (c) 2015 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+# Written by Sergey Karayev
+# --------------------------------------------------------
+
+import numpy as np
+from utils.cython_bbox import bbox_overlaps
+
+
+def bbox_2d_overlap_multiple(boxes, angles, query_boxes, query_angles):
+    if len(boxes.shape) > 1:
+        N = boxes.shape[0]
+    else:
+        N = 1
+    if len(query_boxes) > 1:
+        K = query_boxes.shape[0]
+    else:
+        K = 1
+
+    overlaps = np.zeros((N, K))
+
+    for box_idx in xrange(N):
+        for query_idx in xrange(K):
+            overlaps[box_idx, query_idx] = bbox_2d_overlap_approx(boxes[box_idx], angles[box_idx],
+                                                                  query_boxes[query_idx], query_angles[query_idx])
+    return overlaps
+
+
+def bbox_2d_overlap_approx(box, angle, query_boxes, query_angles):
+    """
+    Parameters
+    ----------
+    box: (1,4) ndarray of float (x,y,wx,wy), with x,y being the top left corner
+    angle: float, rotational angle of box in XY plane
+    query_boxes: (1,4) ndarray of float (x,y,wx,wy), with x,y being the top left corner
+    query_angles: float, rotational angle of query_box in XY plane
+    Returns
+    -------
+    overlaps: float, overlap of both boxes
+    """
+    n_points = 100
+    # rotate both boxes such that box is aligned to both axes
+    rotated_box = rotate_box(box, -angle)
+    rotated_query_box = rotate_box(query_boxes, -angle)
+    if len(rotated_box.shape) == 1 or rotated_box.shape[1] == 1:
+        top_left_box = np.array([rotated_box[0], rotated_box[1]])
+    else:
+        top_left_box = np.concatenate((rotated_box[0], rotated_box[1]), axis=0)
+
+    if len(rotated_query_box.shape) == 1 or rotated_query_box.shape[1] == 1:
+        top_left_query_box = np.array([rotated_query_box[0], rotated_query_box[1]])
+    else:
+        top_left_query_box = np.concatenate([rotated_query_box[0], rotated_query_box[1]], axis=0)
+    new_query_angle = query_angles - angle
+
+    if new_query_angle == 0.:
+        return bbox_overlaps(rotated_box[np.newaxis, :], rotated_query_box[np.newaxis, :])[0, 0]
+
+    # check for extreme case so that the slope can always be defined
+    if new_query_angle == np.pi / 2.:
+        rotated_query_box[2], rotated_query_box[3] = rotated_query_box[3], rotated_query_box[2]
+        rotated_query_box[1] += rotated_query_box[3]
+        return bbox_overlaps(rotated_box[np.newaxis, :], rotated_query_box[np.newaxis, :])[0, 0]
+
+    # create points to check intersection area
+    x_points = np.arange(top_left_box[0], top_left_box[0] + rotated_box[2], rotated_box[2] / float(n_points)) + 1e-4
+    y_points = np.arange(top_left_box[1] - rotated_box[3], top_left_box[1], rotated_box[3] / float(n_points)) + 1e-4
+    x_points, y_points = np.meshgrid(x_points, y_points)
+
+    horizontal_edge_direction = np.concatenate((np.cos(new_query_angle), np.sin(new_query_angle)))  # rightwards
+    vertical_edge_direction = np.concatenate((-np.sin(new_query_angle), np.cos(new_query_angle)))  # upwards
+
+    top_right_query_box = rotated_query_box[:2] + query_boxes[2] * horizontal_edge_direction
+    bottom_left_query_box = rotated_query_box[:2] - query_boxes[3] * vertical_edge_direction
+    bottom_right_query_box = top_right_query_box - query_boxes[3] * vertical_edge_direction
+    corners = np.concatenate((top_right_query_box[:, np.newaxis], top_left_query_box[:, np.newaxis],
+                              bottom_right_query_box[:, np.newaxis], bottom_left_query_box[:, np.newaxis]), axis=1)
+    max_vals = corners.max(axis=1)
+    min_vals = corners.min(axis=1)
+
+    horizontal_slope = horizontal_edge_direction[1] / horizontal_edge_direction[0]
+    vertical_slope = vertical_edge_direction[1] / vertical_edge_direction[0]
+
+    if horizontal_slope < 0:
+        anchor1 = top_right_query_box
+        anchor2 = bottom_left_query_box
+    else:
+        anchor1 = top_left_query_box
+        anchor2 = bottom_right_query_box
+
+    x_points[x_points == anchor1[0]] += 1e-3
+    x_points[x_points == anchor2[0]] -= 1e-3
+
+    slope1 = (y_points - anchor1[1]) / (x_points - anchor1[0])
+    slope2 = (y_points - anchor2[1]) / (x_points - anchor2[0])
+
+    if horizontal_slope < 0:
+        within_rectangle = (slope1 >= horizontal_slope) & (slope1 <= vertical_slope) & \
+                           (slope2 >= horizontal_slope) & (slope2 <= vertical_slope)
+    else:
+        within_rectangle = (slope1 <= horizontal_slope) & (slope1 >= vertical_slope) & \
+                           (slope2 <= horizontal_slope) & (slope2 >= vertical_slope)
+
+    within_rectangle[(x_points < min_vals[0]) | (y_points < min_vals[1]) |
+                     (x_points > max_vals[0]) | (y_points > max_vals[1])] = False
+
+    overlap = float(within_rectangle.sum()) / (n_points ** 2) * box[2] * box[3]
+
+    return overlap
+
+
+def rotate_box(boxes, angle):
+    points = rotate_points(boxes[:2], angle)
+    return np.concatenate((points[:2], boxes[2:]), axis=0)
+
+
+def rotate_points(pts, angle, ctr=np.array([0., 0.])):
+    '''
+    Rotate a point around a certain axis
+    :param pts: points to rotate of dimension 2xN
+    :param angle: angle of rotation in radians
+    :param ctr: axis of rotation
+    :return: rotated point
+    '''
+    pts_offset = pts - ctr
+    r = np.sqrt((pts_offset ** 2).sum(axis=0))
+    theta = np.arctan2(pts_offset[1], pts_offset[0]) + angle
+    vec_dir = np.concatenate((np.cos(theta), np.sin(theta)), axis=0)
+    pts_new = r * vec_dir + ctr
+    return pts_new
+
+
+if __name__ == '__main__':
+    boxes = np.array([0., 0., 10., 10.])
+    angles = np.array([0. * np.pi / 180.])
+    boxes2 = np.array([1., -1., 1., 1.])
+    angles2 = np.array([-40. * np.pi / 180.])
+    print bbox_2d_overlap_approx(boxes, angles, boxes2, angles2)
