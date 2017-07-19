@@ -1,0 +1,46 @@
+sudo apt-get install tortoisehg
+sudo apt-get install python-pip python-dev
+sudo apt-get install virtualenv # install virtualenv
+virtualenv --system-site-packages ~/tensorflow # create virtualenv
+source ~/tensorflow/bin/activate
+pip install --upgrade tensorflow-gpu # install tensorflow
+
+sudo pip install --upgrade pip
+sudo pip install cython easydict
+sudo pip install opencv-python
+sudo apt-get install git
+sudo pip install --upgrade cython
+sudo pip install scipy
+sudo pip install matplotlib
+sudo apt-get install python3-tk
+pip install pyyaml
+sudo pip install image
+
+mkdir ~/Projects
+cd Projects
+git clone --recursive https://github.com/smallcorgi/Faster-RCNN_TF.git
+- add -D_GLIBCXX_USE_CXX11_ABI=0 to g++ cmd in make.sh  (cd $<fasterrcnn>/lib)
+
+Build the Cython modules
+
+cd $<fasterrcnn>/lib
+make
+
+
+source tensorflow/bin/activate
+
+
+
+
+In the Pychram env:
+LD_LIBRARY_PATH
+
+usr/local/cuda/lib64;/usr/local/cuda-8.0/extras/CUPTI/lib64
+
+
+Tensorboard:
+under the virtual env:
+cd ~/tensorflow/lib/python2.7/site-packages/tensorflow/tensorboard/
+(tensorflow) hanochk@inv-lgc02:~/tensorflow/lib/python2.7/site-packages/tensorflow/tensorboard$ tensorboard --logdir=/data/log
+
+
